@@ -1,5 +1,6 @@
 "use client"
 
+import { SignInButton, SignUpButton, Show, UserButton } from "@clerk/nextjs"
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -29,7 +30,23 @@ export function EditorNavbar({
 
       <div className="flex flex-1 items-center justify-center" />
 
-      <div className="flex flex-1 items-center justify-end" />
+      <div className="flex flex-1 items-center justify-end gap-2">
+        <Show when="signed-out">
+          <SignInButton mode="modal">
+            <Button variant="ghost" size="sm">
+              Sign in
+            </Button>
+          </SignInButton>
+          <SignUpButton mode="modal">
+            <Button variant="default" size="sm">
+              Sign up
+            </Button>
+          </SignUpButton>
+        </Show>
+        <Show when="signed-in">
+          <UserButton />
+        </Show>
+      </div>
     </header>
   )
 }

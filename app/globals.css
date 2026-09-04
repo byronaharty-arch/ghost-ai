@@ -46,6 +46,7 @@
 
   --color-surface-border: var(--border-default);
   --color-surface-border-strong: var(--border-subtle);
+  --color-bg-surface-accent: var(--bg-surface-accent);
 
   --color-state-error: var(--state-error);
   --color-state-success: var(--state-success);
@@ -72,6 +73,7 @@
   --bg-surface: #111114;
   --bg-elevated: #18181c;
   --bg-subtle: #1e1e23;
+  --bg-surface-accent: color-mix(in oklab, var(--bg-elevated) 88%, var(--accent-primary) 12%);
 
   --text-primary: #f0f0f4;
   --text-secondary: #c0c0cc;
