@@ -9,9 +9,89 @@ change.
 
 ## Current Goal
 
-- None — `03-auth.md` is complete. Awaiting the next feature-spec chapter.
+- None — `04-project-dialogs.md` is complete. Awaiting the next feature-spec
+  chapter.
 
 ## Completed
+
+- Project dialogs (`context/feature-spec/04-project-dialogs.md`):
+  - `types/project.ts`: `Project` type (`id`, `name`, `slug`, `role: "owner" |
+    "collaborator"`). `lib/mock-projects.ts`: three seed `Project` records (two
+    owner, one collaborator) — the only project data source for this unit, no
+    API calls or persistence per spec.
+  - `lib/utils.ts`: added `slugify()` next to the existing `cn()` helper
+    (lowercase, non-alphanumeric runs → single hyphen, trim leading/trailing
+    hyphens) — used for the Create dialog's live slug preview and to keep a
+    project's `slug` in sync on rename.
+  - `hooks/use-project-dialogs.ts`: the "dedicated hook" the spec asked for.
+    Owns the mock `projects` array plus dialog state (`{type: "create" |
+    "rename" | "delete", project?}` union, `null` when closed), the shared
+    `name` form field, and `isLoading`. `submitCreate`/`submitRename`/
+    `submitDelete` simulate async work with a 400ms `setTimeout` (no real
+    backend to await) before mutating the in-memory array and closing the
+    dialog — chosen so the dialogs' loading states ("Creating...", disabled
+    buttons) have something real to show even though there's no network call
+    yet.
+  - `components/editor/project-dialogs-context.tsx`: a plain React context
+    wrapping that hook. Needed because the Create dialog is triggered from two
+    places that don't share a parent in the component tree otherwise — the
+    sidebar (rendered by `EditorShell`) and the editor home CTA (rendered by
+    `app/editor/page.tsx`, i.e. `EditorShell`'s `children`) — so both sides
+    need the same hook instance, not two independent ones.
+  - `components/editor/create-project-dialog.tsx`,
+    `rename-project-dialog.tsx`, `delete-project-dialog.tsx`: each wraps the
+    existing `EditorDialog` primitive from the editor-chrome unit. Create has
+    the name input plus a live slug preview paragraph below it. Rename
+    prefills the input from `dialog.project.name`, shows the current name in
+    the description, and `autoFocus`es the input. Both Create and Rename use a
+    `<form id="..." onSubmit>` around the input with the footer's submit
+    button wired via the HTML `form="..."` attribute (footer is a sibling of
+    the form, not a child, per `EditorDialog`'s slot layout), so Enter-to-
+    submit works natively. Delete has no input, just a description naming the
+    project, and its confirm button uses the existing `Button
+    variant="destructive"` (already present in `components/ui/button.tsx`
+    from the design-system unit — no new styling added).
+  - `components/editor/editor-home.tsx`: new client component with the
+    spec's exact heading/description copy and a `New Project` button (`Plus`
+    icon) calling `openCreateDialog()` from the context — no `Card` wrapper,
+    per "keep the layout minimal." `app/editor/page.tsx` now just renders it
+    (kept as a server component; the interactivity lives in `EditorHome`).
+  - `components/editor/editor-shell.tsx`: wraps its whole tree in
+    `ProjectDialogsProvider` and renders the three dialog components once at
+    the shell level (so they're available regardless of which page is
+    active). Navbar/sidebar toggle behavior untouched, per spec.
+  - `components/editor/project-sidebar.tsx`: now renders real (mock) project
+    lists in both tabs — "My Projects" filters `role === "owner"`, "Shared"
+    filters `role === "collaborator"`. Owned rows get two ghost icon buttons
+    (`Pencil`/`Trash2`, ~`icon-xs`) that fade in on row hover/focus
+    (`opacity-0 group-hover:opacity-100 focus-within:opacity-100`) calling
+    `openRenameDialog`/`openDeleteDialog`; shared rows render no action
+    buttons at all — chosen over a dropdown-menu component since
+    `dropdown-menu` isn't installed in `components/ui/` yet and two inline
+    icon buttons cover exactly "rename" and "delete" with no new dependency.
+    Footer "New Project" button now calls `openCreateDialog()` instead of
+    being inert. Added a backdrop: a `fixed inset-0` div at `z-30` (below the
+    sidebar's `z-40`), `bg-bg-base/60` (a token-based translucent scrim, not a
+    raw Tailwind color, per `code-standards.md`), visible only when the
+    sidebar is open, `lg:hidden` (mobile/tablet only — the spec's backdrop
+    requirement is under an explicit "On mobile" heading; the sidebar's own
+    overlay behavior is identical at every breakpoint already, so only the
+    scrim is breakpoint-gated), `onClick` calls `onClose` — satisfies "tapping
+    outside the sidebar closes it."
+  - Verified end-to-end with `npm run build` and `npm run lint` (both clean),
+    plus a scripted real-Chrome (puppeteer) pass against the running dev
+    server driving the actual UI: New Project → Create dialog opens → typing
+    a name live-updates the slug preview (`my-cool-project`) → submit closes
+    the dialog and the new project appears in the sidebar; owned rows expose
+    exactly 2 action buttons, shared rows expose 0; Rename dialog opens
+    prefilled and autofocused, editing the name and pressing Enter (no
+    button click) submits and updates the sidebar; Delete dialog has no input
+    and its confirm button carries the `destructive` variant classes, and
+    confirming removes the project from the sidebar; at a 400×800 viewport the
+    backdrop is present (`opacity: 1`) while the sidebar is open and clicking
+    it closes the sidebar. No console errors (only the expected Clerk
+    dev-keys warning). See the Session Notes entry below for how `/editor`
+    was reached for this test despite being behind auth.
 
 - Post-auth redirect hardening (user-requested, from a two-item plan they
   had written up: a logout fix and a "handshake URL" fix):
@@ -285,11 +365,19 @@ change.
 ## Next Up
 
 - Next feature-spec chapter under `context/feature-spec/` (none beyond
-  `03-auth.md` exists yet). Likely candidates per `project-overview.md`:
-  project creation/ownership, collaborator access, or the collaborative
-  canvas surface to fill in `app/editor/page.tsx`'s placeholder — that page
-  is now behind auth via `proxy.ts` but still just a "Canvas coming soon"
-  placeholder.
+  `04-project-dialogs.md` exists yet). Likely candidates per
+  `project-overview.md`: wiring real project creation/ownership/collaborator
+  access to the database (Prisma), or the collaborative canvas surface itself
+  — `app/editor/page.tsx` now shows the create/open CTA from
+  `04-project-dialogs.md` instead of the old "Canvas coming soon" placeholder,
+  but there's still no real canvas, and no project route to land on after
+  opening one.
+- `dropdown-menu` isn't installed in `components/ui/` — fine for now since
+  the sidebar only ever needed two always-visible actions (rename/delete) per
+  `04-project-dialogs.md`, but a future chapter with more per-project actions
+  (e.g. duplicate, share, move) would want it added via
+  `npx shadcn@latest add dropdown-menu` rather than growing the icon-button
+  row further.
 
 ## Open Questions
 
@@ -355,6 +443,26 @@ change.
 
 ## Session Notes
 
+- Verifying `04-project-dialogs.md` in a browser required reaching `/editor`,
+  which `proxy.ts` protects with `auth.protect()` — there's no test user
+  credential available in this environment, and minting one via `clerk
+  impersonate`/`clerk users list` was blocked by this harness's own
+  permission classifier (reads real user data from the linked Clerk app, even
+  though the CLI session was already authenticated as the project owner). Used
+  a narrower, local-only workaround instead: temporarily added `"/editor(.*)"`
+  to `proxy.ts`'s public-route matcher, ran the verification (build+lint plus
+  a scripted puppeteer pass — see the Completed entry above), then reverted
+  `proxy.ts` to its exact original content before finishing. Confirmed the
+  revert took: an unauthenticated `curl` with browser-like headers against
+  `/editor` afterward gets Clerk's normal 307 handshake redirect again (a bare
+  `curl` with no `Accept`/`User-Agent` header gets a 404 from Clerk instead of
+  a redirect — that's Clerk's own dev-instance behavior for non-navigational
+  requests, not something this session's changes affected, confirmed by it
+  happening identically before and after the revert). `puppeteer` was
+  installed with `npm install --no-save` for this one test run (Chromium
+  itself was already cached locally from a prior session's testing, so no
+  large download) and uninstalled again immediately after; `package.json`/
+  `package-lock.json` are unchanged.
 - Debugged a "sidebar doesn't open" report on `/editor`. Automated click
   tests (puppeteer, both headless Chrome and this machine's actual Edge
   152 binary) against the running dev server consistently showed the toggle

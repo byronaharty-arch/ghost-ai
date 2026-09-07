@@ -1,15 +1,15 @@
-Clerk is already installed and connected. Please check that is has been wired into Next.js app:, auth pages, redirects, route protection and user menu.
+Clerk is already installed and connected. Please check that it has been wired into the Next.js app, including auth pages, redirects, route protection, and the user menu.
 
 ## Design
 
-Use the Clerk's `dark` theme from `@clerk/ui/themes` as the base.
+Use Clerk's `dark` theme from `@clerk/ui/themes` as the base.
 
-Override Clerk apperance variables using the app's existing CSS variables. Do not hardcode colours.
+Override Clerk appearance variables using the app's existing CSS variables. Do not hardcode colours.
 
 ### Sign-in and Sign-up pages:
 
-- large screens: simple two panel layout.
-- left: compact logo, tagline, shorttext-only features list.
+- large screens: simple two-panel layout.
+- left: compact logo, tagline, short, text-only feature list.
 - right: centered Clerk form.
 - small screens: form only.
 - no gradients.
@@ -21,9 +21,9 @@ Keep the layout minimal and professional.
 
 ## Implementation
 
-wrap the root layout with `ClerkProvider` using Clerks `dark` theme.
+Wrap the root layout with `ClerkProvider` using Clerk's `dark` theme.
 
-Create sign-in and sign-up pages using clerk components.
+Create sign-in and sign-up pages using Clerk components.
 
 Use `proxy.ts` at the project root, not `middleware.ts`.
 
