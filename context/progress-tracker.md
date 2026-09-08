@@ -9,10 +9,105 @@ change.
 
 ## Current Goal
 
-- None — `04-project-dialogs.md` is complete. Awaiting the next feature-spec
-  chapter.
+- None — `05-prisma.md` is complete. Awaiting the next feature-spec chapter.
 
 ## Completed
+
+- Prisma data models and client (`context/feature-spec/05-prisma.md`):
+  - This repo's installed toolchain is Prisma **7.10.0**, which changed
+    enough (required driver adapters, `prisma7.config.ts` instead of
+    `prisma.config.ts`, explicit generator `output`, generated-client
+    entrypoints) that the spec's instructions had to be mapped onto v7
+    conventions rather than the classic v5/v6 `@prisma/client` pattern the
+    spec text reads like. Confirmed via `.claude/skills/prisma-upgrade-v7`
+    and by reading the installed packages directly (`@prisma/client`'s own
+    `client.d.ts` for the `PrismaClientOptionsWithAccelerateUrl` /
+    `...WithAdapter` discriminated union; `@prisma/config`'s
+    `loadConfigFromFile` source, which showed the CLI checks for
+    `prisma7.config.ts` *before* falling back to legacy `prisma.config.ts`
+    filenames — i.e. `prisma7.config.ts` is the real, intentionally-versioned
+    v7 config file, not a stray file to ignore).
+  - **Found and removed dead code from an abandoned, non-functional Prisma
+    setup** that predated this unit: root `prisma.config.ts` (imported
+    `@prisma/cli-engine` and `@prisma/orm-postgres/config`, neither
+    installed), `prisma/db.ts` (imported `@prisma/orm-postgres/runtime` and a
+    `./contract.json`/`./contract.d` that don't exist), and the
+    `contract:emit` script in `package.json` (ran `prisma contract emit`,
+    confirmed via `prisma contract --help` that `contract` isn't a command
+    this CLI has). None of these three were reachable from any working code
+    path — the CLI's own config-resolution order meant `prisma7.config.ts`
+    was already the effective config, `prisma/db.ts` had zero importers
+    anywhere in the app, and the broken `schema.prisma` content these left
+    behind (`TimestamptzString`, `temporal.updatedAtString()` — not real
+    Prisma types) was never validated by anything. Deleted rather than
+    fixed-in-place since they belonged to a different, incompatible client
+    strategy (a "contract" object queried directly, vs. this spec's
+    `PrismaClient` + singleton pattern) and kept both approaches from ever
+    coexisting correctly.
+  - `prisma/schema.prisma`: now just the `datasource` (`provider =
+    "postgresql"`, no `url` — that lives in `prisma7.config.ts` per v7) and
+    `generator client` blocks (`provider = "prisma-client"`, `output =
+    "../app/generated/prisma"` — matches the `/app/generated/prisma` entry
+    already sitting in `.gitignore` from initial scaffolding, and keeps
+    generated code inside the `app/` boundary rather than mixing it into
+    `prisma/`).
+  - `prisma7.config.ts`: `schema` changed from the single file
+    `"prisma/schema.prisma"` to the directory `"prisma"` — `@prisma/config`
+    resolves a directory schema path by recursively globbing every
+    `*.prisma` file under it, which is what lets `prisma/schema.prisma`
+    (datasource/generator) and `prisma/models/project.prisma` (models) merge
+    into one schema. Confirmed with `npx prisma validate`.
+  - `prisma/models/project.prisma`: `ProjectStatus` enum (`DRAFT`,
+    `ARCHIVED`) plus the two models exactly as scoped — `Project` (`id`
+    `String @default(cuid())`, `ownerId String` for the Clerk user id per
+    `architecture.md`'s "single owner (Clerk user ID)" — no local `User`
+    table, Clerk is the identity source of record — `name`, optional
+    `description`, `status ProjectStatus @default(DRAFT)`, optional
+    `canvasJsonPath` per the Storage Model doc (blob path filled in later,
+    not at creation), `createdAt`/`updatedAt` timestamps, `@@index([ownerId])`
+    and `@@index([createdAt])`) and `ProjectCollaborator` (`id`, `project`
+    relation with `onDelete: Cascade`, `projectId`, `collaboratorEmail`,
+    `createdAt`, `@@unique([projectId, collaboratorEmail])`,
+    `@@index([collaboratorEmail])`, `@@index([projectId, createdAt])`). No
+    fields beyond what the spec listed plus the `id` primary key every Prisma
+    model requires.
+  - `lib/prisma.ts`: cached singleton on `globalThis` (the standard
+    Next.js-hot-reload pattern — avoids exhausting connections across
+    dev-server module reloads), branching in `createPrismaClient()` on
+    whether `DATABASE_URL` starts with `prisma+postgres://` — that branch
+    constructs `new PrismaClient({ accelerateUrl: databaseUrl })`, everything
+    else constructs `new PrismaClient({ adapter: new PrismaPg({
+    connectionString: databaseUrl }) })`. Uses the client's native
+    `accelerateUrl` constructor option rather than installing
+    `@prisma/extension-accelerate` and calling `.$extends(withAccelerate())`
+    — the spec's Dependencies section lists only `prisma`, `@prisma/client`,
+    `@prisma/adapter-pg`, `pg` as already installed and doesn't call for a
+    new package, and `accelerateUrl` (confirmed in `@prisma/client`'s
+    `PrismaClientOptionsWithAccelerateUrl` type) works standalone for
+    connecting through Accelerate without the caching-focused extension.
+  - Ran `npx prisma generate` (client generated to `app/generated/prisma/`,
+    already covered by the pre-existing `/app/generated/prisma` `.gitignore`
+    entry) and generated+applied the migration (`prisma/migrations/
+    20260908071854_init/migration.sql`) — see the Session Notes entry below
+    for how the migration was actually verified against a real Postgres
+    server despite this machine's network restrictions blocking the
+    project's real `DATABASE_URL`. Migration SQL matches the schema exactly:
+    `CREATE TYPE "ProjectStatus"`, both tables, all four indexes, the unique
+    constraint, and the cascading FK.
+  - `app/layout.tsx`: incidental fix, unrelated to Prisma but blocking this
+    unit's required `npm run build` check — `import { dark } from
+    "@clerk/ui/themes"` no longer resolves (`@clerk/ui@0.3.24`'s
+    `package.json` `exports` map has no `./themes` entry any more, confirmed
+    by reading it directly; this must have been removed in a dependency
+    update since the `03-auth.md` unit, which verified this same import
+    working). Removed the import and the `theme: dark` line from
+    `ClerkProvider`'s `appearance` prop; the token-based `variables` override
+    (the part that actually maps Clerk's theme to this app's CSS custom
+    properties) is untouched and still applies in full. Logged as an open
+    question below rather than investigating a replacement dark theme, since
+    that's outside this unit's scope.
+  - Verified: `npx prisma validate`, `npx prisma generate`, `npm run build`,
+    and `npm run lint` all pass.
 
 - Project dialogs (`context/feature-spec/04-project-dialogs.md`):
   - `types/project.ts`: `Project` type (`id`, `name`, `slug`, `role: "owner" |
@@ -105,7 +200,9 @@ change.
     query param) lands on the `..._FALLBACK_REDIRECT_URL` target (`/`) after
     signing in, and only then does `app/page.tsx` bounce them to `/editor` —
     an extra hop through `/`. With the force redirect set, Clerk sends them
-    straight to `/editor`. Verified on the live dev server: `/sign-in`'s
+    straight to `/editor`. Configure both force-redirect variables in every
+    deployed environment as well; they are not limited to local development.
+    Verified on the live dev server: `/sign-in`'s
     rendered Clerk config now shows `"signInForceRedirectUrl":"/editor"` /
     `"signUpForceRedirectUrl":"/editor"` (env change picked up without a
     server restart).
@@ -348,7 +445,8 @@ change.
     `--state-error`, etc.) and maps shadcn's semantic variables
     (`--background`, `--card`, `--popover`, `--primary`, `--muted`,
     `--destructive`, `--border`, `--ring`, ...) onto them, plus Tailwind
-    utility aliases (`bg-base`, `text-copy-primary`, `bg-accent-dim`,
+    utility aliases (`bg-bg-base`, `bg-bg-surface`, `text-copy-primary`,
+    `bg-accent-dim`,
     `border-surface-border`, `text-accent-ai`, `bg-state-error`, etc.).
   - `app/layout.tsx` always puts `dark` class on `<html>` (app is dark-only,
     no light/dark toggle).
@@ -365,13 +463,20 @@ change.
 ## Next Up
 
 - Next feature-spec chapter under `context/feature-spec/` (none beyond
-  `04-project-dialogs.md` exists yet). Likely candidates per
-  `project-overview.md`: wiring real project creation/ownership/collaborator
-  access to the database (Prisma), or the collaborative canvas surface itself
-  — `app/editor/page.tsx` now shows the create/open CTA from
-  `04-project-dialogs.md` instead of the old "Canvas coming soon" placeholder,
-  but there's still no real canvas, and no project route to land on after
-  opening one.
+  `05-prisma.md` exists yet). Likely candidates per `project-overview.md`:
+  wiring the `04-project-dialogs.md` mock `lib/mock-projects.ts` data over to
+  real `prisma.project`/`prisma.projectCollaborator` calls behind
+  authenticated API routes (ownership checks against `auth().userId`), or the
+  collaborative canvas surface itself — `app/editor/page.tsx` now shows the
+  create/open CTA from `04-project-dialogs.md` instead of the old "Canvas
+  coming soon" placeholder, but there's still no real canvas, and no project
+  route to land on after opening one.
+- **The real `DATABASE_URL` in `.env`/`.env.local` (`pooled.db.prisma.io`) has
+  not had the `init` migration applied to it** — this sandbox's network
+  cannot reach it (see Session Notes below). Run `npx prisma migrate deploy`
+  (or `migrate dev` if further schema changes are made first) against that
+  database from a machine/CI job with real network access before anything
+  that queries `Project`/`ProjectCollaborator` is exercised against it.
 - `dropdown-menu` isn't installed in `components/ui/` — fine for now since
   the sidebar only ever needed two always-visible actions (rename/delete) per
   `04-project-dialogs.md`, but a future chapter with more per-project actions
@@ -380,6 +485,18 @@ change.
   row further.
 
 ## Open Questions
+
+- `@clerk/ui@0.3.24` no longer exports `./themes` (its `package.json`
+  `exports` map only has `./contexts`, `./*` → `components/*`, and
+  `./styles.css`), so the `dark` base theme used by `app/layout.tsx` since
+  `03-auth.md` had to be dropped (see the Prisma-unit entry above — the
+  removal was incidental cleanup to unblock `npm run build`, not a
+  deliberate redesign). The app currently relies entirely on the
+  `appearance.variables` token overrides for Clerk's look, with no
+  `baseTheme` set. If a real replacement dark theme is wanted, it needs
+  either a version of `@clerk/ui`/`@clerk/nextjs` that still exports one, or
+  a different theme source (e.g. `@clerk/themes` isn't installed either) —
+  not investigated further since it's outside the Prisma unit's scope.
 
 - Clerk Dashboard "Paths" setting for this instance's after-sign-out URL
   (`afterSignOutOneUrl`/`afterSignOutAllUrl`) is unknown/unverified from
@@ -443,6 +560,32 @@ change.
 
 ## Session Notes
 
+- This machine's network cannot reach the project's real `DATABASE_URL`
+  (`pooled.db.prisma.io:5432`) — `prisma migrate dev` failed with `P1001:
+  Can't reach database server`. Diagnosed past the generic error: a raw
+  `net.createConnection` to that host:port succeeds (TCP connects fine), but
+  both a real SSL `pg` connection *and* a plain `sslmode=disable` connection
+  get `ECONNRESET` immediately after — i.e. the TCP handshake completes but
+  something in the path kills the connection once it sees non-HTTP(S) wire
+  protocol, consistent with the corporate DPI/proxy behavior already
+  documented elsewhere in this file (the `shadcp.com` TLS-interception note,
+  the Clerk-impersonation permission block). This is a machine/network
+  constraint, not a code or schema problem.
+  To still verify the schema/migration actually work against a real
+  PostgreSQL server (not just that the SQL text looks right), spun up a
+  temporary, fully local server with `npx prisma dev -d --name
+  ghost-ai-verify -p 51213 --db-port 51214` (Prisma's own local
+  Postgres-compatible dev server — no external network needed once its
+  binary is cached) and ran `prisma migrate dev --name init` against it with
+  `DATABASE_URL` overridden inline for that one command only (never wrote
+  the local URL into `.env`/`.env.local`). It applied cleanly; the generated
+  `migration.sql` (kept, at `prisma/migrations/20260908071854_init/`) matches
+  the schema exactly — confirmed by reading the file's `CREATE TYPE`/`CREATE
+  TABLE`/index/constraint statements against `prisma/models/project.prisma`.
+  Removed the temporary server afterward with `npx prisma dev rm
+  ghost-ai-verify --force`. Net effect: the migration file is real and
+  correct, but has only been applied to that temporary local server, not to
+  `pooled.db.prisma.io` — see the "Next Up" entry above.
 - Verifying `04-project-dialogs.md` in a browser required reaching `/editor`,
   which `proxy.ts` protects with `auth.protect()` — there's no test user
   credential available in this environment, and minting one via `clerk
