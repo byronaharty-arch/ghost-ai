@@ -9,9 +9,326 @@ change.
 
 ## Current Goal
 
-- None — `05-prisma.md` is complete. Awaiting the next feature-spec chapter.
+- None — `07-wire-editor-home.md` is complete. Awaiting the next feature-spec chapter.
 
 ## Completed
+
+- **Fixed: newly created project didn't appear in the sidebar until a manual
+  page refresh** (user-reported, in `hooks/use-project-dialogs.ts` from
+  `07-wire-editor-home.md`). Root cause: `submitCreate()` called
+  `router.push(`/editor/${project.id}`)` and `router.refresh()`
+  back-to-back with `refresh()` fired *first* (wrapped in `startTransition`,
+  not awaited) and `push()` immediately after. `router.refresh()` only
+  invalidates the Client Cache for whatever route is current **at the
+  moment it's called** — since it ran before `push()`, it refreshed the
+  soon-to-be-abandoned `/editor` route, not the destination
+  `/editor/[projectId]` route being navigated to. `app/editor/layout.tsx`
+  (which fetches `getOwnedProjects`/`getSharedProjects` and renders the
+  sidebar) is shared by both routes, so the destination page rendered with
+  whatever cached layout data the client already had for that segment —
+  stale, missing the just-created project — until a full manual reload
+  forced a real refetch. Same bug existed in `submitDelete()`'s
+  redirect-to-`/editor` branch (`refresh()` and the conditional
+  `push("/editor")` fired together in one `startTransition`). Fixed both by
+  reordering to navigate first, *then* refresh: `router.push(...)`
+  immediately, followed by `router.refresh()` inside `startTransition` —
+  so the refresh targets the route the user actually lands on.
+  `submitRename()` was already correct (no navigation involved, so a bare
+  `router.refresh()` on the still-current route was never affected by this
+  ordering issue). Verified: `npm run build` and `npm run lint` pass.
+
+- **Switched local `DATABASE_URL` to a local dev database** (user-requested,
+  triggered by `npm run dev` throwing
+  `PrismaClientKnownRequestError: ... Server has closed the connection.` from
+  `lib/projects.ts`'s `getSharedProjects()` → `prisma.projectCollaborator.findMany()`):
+  - Root cause confirmed, not fixed in application code: this machine cannot
+    sustain a raw Postgres wire-protocol connection to the real database at
+    `pooled.db.prisma.io:5432` — a plain `net.createConnection` completes the
+    TCP handshake but the connection is reset immediately after, before any
+    Postgres protocol bytes are exchanged (re-confirmed live during this
+    session; matches the identical finding logged in this file's Session
+    Notes from the `05-prisma.md` unit — a corporate proxy/DPI killing
+    non-HTTP(S) traffic on that port, not a code or schema problem).
+  - Spun up a **persistent** local Prisma dev Postgres server (`npx prisma
+    dev -d --name ghost-ai-local`, unlike the throwaway ones used for
+    verification in earlier units) and ran `npx prisma migrate deploy`
+    against it — applied cleanly. Its actual assigned TCP address came back
+    as `postgres://postgres:postgres@localhost:51218/template1?sslmode=disable`
+    (the `-p`/`--db-port` flags passed at creation didn't change the
+    assigned ports; used whatever `npx prisma dev ls` reported instead of
+    fighting the flags). List/inspect it any time with `npx prisma dev ls`;
+    it survives across terminal sessions until explicitly stopped
+    (`npx prisma dev stop ghost-ai-local`) or removed
+    (`npx prisma dev rm ghost-ai-local --force`).
+  - `.env` and `.env.local`: commented out the real
+    `postgres://...@pooled.db.prisma.io:5432/...` `DATABASE_URL` (kept in
+    place, not deleted, labeled "RESTORE THIS BEFORE DEPLOYING") and added
+    the local one as the active `DATABASE_URL` beneath it, with a matching
+    "local-only, not for deployment" label. Both files are gitignored
+    (`.env*` in `.gitignore`) so this never touches version control.
+  - Verified: `npx prisma generate` succeeded; a direct script importing
+    `lib/prisma.ts`'s singleton and calling `prisma.project.findMany()`
+    against the local DB returned successfully (`OK, project count: 0`) with
+    `DATABASE_URL` set to the local connection string; started `npm run dev`
+    and confirmed `GET /api/projects` no longer throws the connection-reset
+    error (returns the expected `401` for an unauthenticated request instead
+    of an unhandled 500-class Prisma error) — the failure mode from the bug
+    report is gone.
+  - **Action required before deploying**: restore the real `DATABASE_URL` in
+    whatever env mechanism the deployment target uses (uncomment/copy the
+    line preserved in `.env`/`.env.local`, or set it directly in the hosting
+    platform's env config) and confirm `npx prisma migrate deploy` has been
+    run against that real database from a network that can actually reach
+    it — local dev running against `ghost-ai-local` proves nothing about the
+    real database's migration state. See the matching "Next Up" bullet
+    below.
+
+- Wire editor home sidebar and dialogs to the real project API
+  (`context/feature-spec/07-wire-editor-home.md`):
+  - **Ambiguity resolved: where "the editor home page" fetches from.** The
+    spec says "the editor home page is a server component" that fetches
+    owned/shared projects and "passes both lists to the sidebar," but the
+    sidebar (`ProjectSidebar`) is rendered by `EditorShell`, which lives in
+    `app/editor/layout.tsx` — a parent of `app/editor/page.tsx` (the literal
+    "home page"), not a descendant. A child page component has no prop path
+    to a sidebar rendered by its own parent layout. Resolved by doing the
+    fetch in `app/editor/layout.tsx` instead (already a server component,
+    already the thing that instantiates `EditorShell`/the sidebar for every
+    `/editor/*` route) and treating the spec's "editor home page" as shorthand
+    for the `/editor` section's server shell, not literally `page.tsx`.
+    `app/editor/page.tsx` itself is unchanged (still just renders
+    `EditorHome`, which needs no project data of its own).
+  - **Ambiguity resolved: `Project.slug`.** The pre-existing `Project` UI type
+    (`types/project.ts`) had a `slug` field carried over from
+    `04-project-dialogs.md`'s mock data, but grepped zero usages anywhere in
+    `components/`. The real `Project` Prisma model (`05-prisma.md`) has no
+    slug column either. Removed the field from `types/project.ts` rather than
+    inventing a fake value to keep it populated — dead field, not a
+    requirement.
+  - **Ambiguity resolved: "the project ID and Liveblocks room ID should stay
+    aligned."** Liveblocks isn't installed/wired into this codebase yet (no
+    package, no room-creation code anywhere) — that's a future spec chapter.
+    Read this line as a forward constraint: whatever value later becomes the
+    Liveblocks room ID must equal `Project.id` in the database, so the two
+    are never two different strings that have to be kept in sync by hand.
+    Implemented by generating the "room ID" client-side at create time
+    (`slugify(name) + "-" + generateRoomSuffix()`, the suffix a random 6-char
+    hex string from `crypto.randomUUID()`) and sending it as an explicit `id`
+    in the `POST /api/projects` body, which the route now accepts and uses
+    verbatim as the Prisma row's primary key (instead of always letting
+    `@default(cuid())` generate one) — so `project.id` *is* the value a
+    future Liveblocks integration would use as the room id, with nothing to
+    keep in sync. `POST` validates the client-supplied `id` with the existing
+    `isValidSlug()` regex and returns `409` on a `P2002` unique-constraint
+    conflict (collision is practically impossible at a 6-hex-char random
+    suffix; a plain error message was judged sufficient rather than building
+    auto-retry logic that wasn't asked for).
+  - **Ambiguity resolved: `PATCH`/`DELETE /api/projects/[id]`.** The spec text
+    describes idealized per-resource paths, but the actual, already-shipped
+    (`06-project-apis.md`) route is a single `app/api/projects/route.ts` with
+    `id` in the JSON body for both `PATCH` and `DELETE`, not a dynamic
+    `[id]` segment. Rebuilding the route structure to match the spec's path
+    notation literally would be a materially bigger, riskier change to an
+    already-tested endpoint, and this chapter's own framing ("wire ... to the
+    real project API") points at using what exists, not rebuilding it. Read
+    the bracket notation as documentation shorthand for "the project's
+    update/delete endpoint" and kept calling the real `/api/projects`
+    contract from the client.
+  - **Added `app/editor/[projectId]/page.tsx`** (not explicitly asked for,
+    but required for "create navigates to workspace" to be a real, testable
+    outcome instead of a 404): a minimal placeholder, same pattern as the
+    original `02-editor.md` "Canvas coming soon" page — `findUnique`s the
+    project, `notFound()`s if it doesn't exist or the current user is neither
+    the owner nor a matching `ProjectCollaborator` by email, otherwise shows
+    the project name and "Canvas coming soon." No canvas features invented.
+  - `lib/projects.ts` (new — the "existing projects data helper" the spec's
+    wording assumes; it didn't actually exist yet before this chapter):
+    `getOwnedProjects(userId)` (`prisma.project.findMany` by `ownerId`, reused
+    by both `app/editor/layout.tsx` and the `GET` handler in
+    `app/api/projects/route.ts` — the latter refactored to call it instead of
+    duplicating the query) and `getSharedProjects(email)` (looks up
+    `ProjectCollaborator` rows by `collaboratorEmail` — the schema's only
+    collaborator-identifying field is email, not a Clerk user id — and maps
+    to their parent `Project` rows; returns `[]` for a `null` email so a
+    signed-in user with no verified email doesn't crash the page).
+  - `app/editor/layout.tsx`: now `async`, calls Clerk's `auth()` +
+    `currentUser()` (the latter needed for `user.primaryEmailAddress` to
+    resolve shared-project membership by email — `auth()` alone only exposes
+    the Clerk user id), fetches both lists via `lib/projects.ts` in parallel,
+    maps each Prisma record to the UI `Project` shape (`id`, `name`, and a
+    `role` tag added at the mapping boundary — `"owner"` for the owned list,
+    `"collaborator"` for the shared list), and passes both arrays as props
+    into `EditorShell`. No client-side fetch for the initial load, per spec.
+  - `app/api/projects/route.ts`: `GET` now calls `getOwnedProjects` (no
+    behavior change, just de-duplicated against the layout's query). `POST`
+    accepts an optional `id` in the body (validated with `isValidSlug`,
+    `400` if invalid), uses it as the Prisma row id when present, and
+    catches `Prisma.PrismaClientKnownRequestError` with `code === "P2002"`
+    to return `409` on an id collision instead of an unhandled 500.
+  - `hooks/use-project-dialogs.ts`: rewritten from the mock/`setTimeout`
+    version. Takes `{ ownedProjects, sharedProjects }` as arguments (from the
+    server-fetched props, threaded through `ProjectDialogsProvider` →
+    `EditorShell`) and derives `projects` as a plain `useMemo` concatenation —
+    deliberately **not** copied into its own `useState`, so there is no
+    client-side cache that can drift from the server truth. Dialog
+    open/close, the `name` field, `nameError` (client-side validation), and
+    a new `submitError` (surfaces the API's own JSON `error` message on a
+    failed fetch — a real network-backed API can fail in ways the old mock
+    never could, e.g. `403`/`404`/`409`) remain local `useState`. Added
+    `roomSuffix` (generated fresh each time `openCreateDialog()` runs) and a
+    derived `roomId` (`slug + "-" + roomSuffix`) for the create dialog's room
+    ID preview. `submitCreate`/`submitRename`/`submitDelete` now `fetch()`
+    the real `/api/projects` endpoint (`POST`/`PATCH`/`DELETE` respectively)
+    instead of a 400ms fake timer; on success they close the dialog and call
+    `router.refresh()` (via `next/navigation`'s `useRouter`, wrapped in
+    `useTransition` so `isPending` folds into the existing `isLoading` flag)
+    so the next server render re-fetches real data — this is what makes
+    "refresh on success" actually pull fresh state rather than only
+    resetting UI. `submitCreate` additionally `router.push`es to
+    `/editor/${project.id}` after a successful create. `submitDelete`
+    compares `usePathname()` against `/editor/${project.id}` to detect "the
+    active workspace" and calls `router.push("/editor")` (alongside the
+    refresh) only in that case, per spec.
+  - `lib/utils.ts`: added `generateRoomSuffix()` (`crypto.randomUUID()`,
+    hyphens stripped, first 6 hex chars) next to the existing
+    `slugify`/`isValidSlug` helpers.
+  - `components/editor/project-dialogs-context.tsx`,
+    `components/editor/editor-shell.tsx`: both now take and forward
+    `ownedProjects`/`sharedProjects` props instead of the hook owning its own
+    mock array — pure plumbing changes, no new state.
+  - `components/editor/create-project-dialog.tsx`: preview paragraph now
+    shows `roomId` (the real value sent as `POST`'s `id`) instead of the old
+    bare `slug`. All three dialogs (`create-project-dialog.tsx`,
+    `rename-project-dialog.tsx`, `delete-project-dialog.tsx`) now render
+    `submitError` in a `text-destructive` paragraph — `EditorDialog`'s
+    existing `children` slot for create/rename (inside the `<form>`) and
+    for delete (which had no children before; now renders a conditional
+    error paragraph there).
+  - Deleted `lib/mock-projects.ts` (only ever imported by the old hook, now
+    unused — real API data replaces it entirely, not layered alongside it).
+  - Verified: `npm run build` and `npm run lint` both pass (`/editor/
+    [projectId]` shows as a new dynamic route in the build output).
+    Confirmed `/editor` and `/editor/[projectId]` still redirect
+    unauthenticated browser-like requests to sign-in (`307`, matching the
+    existing `03-auth.md`/`06-project-apis.md` behavior — no regression).
+    Backend logic verified directly against a temporary local Postgres
+    (`npx prisma dev`, same technique as `05-prisma.md`/`06-project-apis.md`,
+    removed afterward): `getOwnedProjects`/`getSharedProjects` scope
+    correctly by owner id and by collaborator email respectively (including
+    a `null`-email no-crash case); an explicit client-supplied `id` is
+    stored verbatim on the created row; a duplicate explicit `id` throws
+    `P2002` (confirming the route's `409` branch is reachable); the
+    owner-or-collaborator-by-email check used by the new workspace page
+    correctly allows the owner and correctly excludes an unrelated user.
+    Full click-through UI wiring verified with a real headless Chrome
+    (puppeteer) pass against the actual running dev server: built a
+    temporary, non-product route (`app/smoke-test-07/page.tsx`, deleted
+    afterward — note it could **not** be named with a leading underscore
+    like `app/_smoke`, since Next's App Router treats `_`-prefixed folders as
+    private/non-routable, which cost a debugging round-trip) rendering
+    `EditorShell` directly with fixed fake owned/shared project props, and
+    temporarily marked it public in `proxy.ts` (reverted immediately after,
+    confirmed byte-for-byte identical to before) so it didn't need a real
+    Clerk session — this was enough because the flows under test
+    (sidebar rendering, dialog open/prefill/close, `fetch` wiring) don't
+    depend on the layout's server-side auth call, only on props the harness
+    supplied directly. Confirmed: sidebar renders the owned/shared lists with
+    correct per-tab filtering and that only owned rows get action buttons;
+    New Project opens the create dialog and the room-ID preview live-updates
+    to the exact `slug-<6-hex-chars>` shape; submitting Create issues a real
+    `POST /api/projects` with `{ id, name }` matching that shape; Rename
+    opens prefilled with the current name and submitting issues a real
+    `PATCH` with the correct `{ id, name }`; Delete shows the target
+    project's name and submitting issues a real `DELETE` with the correct
+    `{ id }`; all three, being genuinely unauthenticated requests, correctly
+    receive `401 { error: "Unauthorized" }` from the live route and correctly
+    display that message via the new `submitError` state — exercising the
+    full success-shaped request path and the real error-handling path in one
+    pass, which is as much of this flow as can be verified without a real
+    Clerk session in this sandbox (same limitation as every prior unit's
+    Session Notes). Puppeteer was installed with `npm install --no-save`
+    (Chromium already cached locally from a prior session, confirmed before
+    installing) and uninstalled again after; confirmed `package.json`/
+    `package-lock.json` mention it nowhere.
+
+- Project REST API routes (`context/feature-spec/06-project-apis.md`):
+  - `app/api/projects/route.ts`: `GET`/`POST`/`PATCH`/`DELETE` handlers for
+    `/api/projects`, all backend-only per the spec's "do not wire the UI yet"
+    instruction — nothing in `components/`/`app/editor` calls this route.
+    `GET` lists `prisma.project.findMany({ where: { ownerId: userId } })`
+    ordered newest-first — scoped to the spec's "current user's projects"
+    with no `ProjectCollaborator` involvement (that model exists in the
+    schema from `05-prisma.md` but this spec chapter never mentions
+    collaborator visibility, so it was left out rather than invented).
+    `POST` creates with `ownerId` set to the authenticated Clerk `userId` and
+    `name` defaulted to `"Untitled Project"` when the request body's `name`
+    is missing or blank (`rawName.trim() || "Untitled Project"`); relies on
+    the schema's existing `@default(cuid())` for `id`, no sequential ID
+    added. `PATCH`/`DELETE` both take `{ id }` (plus `{ name }` for `PATCH`)
+    in the JSON body, `findUnique` the project first, and compare
+    `project.ownerId !== userId` before mutating.
+  - Response/status shape (none of this is dictated verbatim by the spec
+    text, so kept minimal and consistent across all four handlers): missing/
+    invalid Clerk session → `401 { error: "Unauthorized" }`; malformed body
+    (`PATCH`/`DELETE` missing `id`, `PATCH` missing/blank `name`) → `400`;
+    unknown `id` → `404 { error: "Not found" }`; `id` exists but
+    `ownerId !== userId` → `403 { error: "Forbidden" }`, exactly matching the
+    spec's "non-owner mutations return 403"; success →
+    `200 { project }` (`GET`/`PATCH`), `201 { project }` (`POST`), or
+    `200 { success: true }` (`DELETE`).
+  - **Found and fixed a real bug in `proxy.ts` while verifying the 401
+    requirement**: `proxy.ts` ran `auth.protect()` for every non-public
+    route including `/api/*`. Clerk's `auth.protect()` only returns a plain
+    401 for what it detects as a Server Action request; for anything else it
+    treats a signed-out request as either a page request (307 redirect to
+    `/sign-in`) or, for a non-navigational fetch/XHR/curl request lacking
+    `Sec-Fetch-Dest: document`/`Accept: text/html`, a bare `404` — never a
+    `401` JSON body (confirmed by reading
+    `node_modules/@clerk/nextjs/dist/esm/server/protect.js`'s
+    `handleUnauthenticated()`, and by curling the live dev server before the
+    fix: unauthenticated `GET /api/projects` came back as a `307` redirect
+    to `/sign-in`, not `401`). That conflicts directly with this spec's
+    "unauthenticated requests return `401`" rule, and would have made the
+    route handler's own `401` branch unreachable dead code, since
+    `auth.protect()` short-circuits the request before my route ever runs.
+    Fixed by adding an `isApiRoute = createRouteMatcher(["/api(.*)"])` check
+    in `proxy.ts` that returns early (skips `auth.protect()`) for any
+    `/api/*` request, letting API route handlers own their auth response
+    entirely — matches `code-standards.md`'s API Routes rule ("Enforce auth
+    and ownership before any mutation") being written as a route-handler
+    responsibility, not a proxy one. `clerkMiddleware()` still runs first on
+    every request regardless (it's not conditionally skipped, only
+    `auth.protect()` is), so `auth()` inside the route handler still sees
+    the real signed-in/signed-out state correctly. Verified live:
+    unauthenticated `GET`/`POST`/`PATCH`/`DELETE` on `/api/projects` all now
+    return `401 { error: "Unauthorized" }`, and `/editor` is still
+    page-protected (`307` to `/sign-in`) — the fix is scoped to `/api/*`
+    only.
+  - Verified: `npm run build` and `npm run lint` both pass (`/api/projects`
+    shows as a dynamic route in the build output). Live-curled all four
+    unauthenticated HTTP verbs against the running dev server (401s
+    confirmed as above) and confirmed `/editor` page auth is unaffected.
+    For the authenticated business logic (owner-scoped `GET`, default-name
+    `POST`, cuid `id` strategy, owner-only `PATCH`/`DELETE`, `403` for a
+    different `ownerId`, `404` for a missing `id`), no real signed-in Clerk
+    session is available in this sandbox (same limitation logged in this
+    file's Session Notes for `04-project-dialogs.md`), so the exact Prisma
+    calls the route handlers make were run directly (via `tsx`, no HTTP/
+    Clerk layer) against a real local Postgres instance — spun up the same
+    way as `05-prisma.md`'s verification
+    (`npx prisma dev -d --name ghost-ai-verify2 -p 51223 --db-port 51224`,
+    connection string overridden inline only, `npx prisma migrate deploy`
+    against it) — asserting: missing name → `"Untitled Project"`; created
+    `id` matches the cuid shape, not sequential; `findMany({ where:
+    { ownerId } })` returns only that owner's 2 projects, excluding a 3rd
+    project owned by a different user; update/delete by the owning `userId`
+    succeed; the same ownership comparison the route uses
+    (`project.ownerId !== userId`) evaluates `true` (i.e., would 403) for a
+    non-owner on both rename and delete; `findUnique` on an unknown `id`
+    returns `null` (i.e., would 404). All assertions passed. Removed the
+    temporary local server afterward (`npx prisma dev rm ghost-ai-verify2
+    --force`) and the scratch verification script; no files left behind in
+    the repo.
 
 - Prisma data models and client (`context/feature-spec/05-prisma.md`):
   - This repo's installed toolchain is Prisma **7.10.0**, which changed
@@ -463,20 +780,42 @@ change.
 ## Next Up
 
 - Next feature-spec chapter under `context/feature-spec/` (none beyond
-  `05-prisma.md` exists yet). Likely candidates per `project-overview.md`:
-  wiring the `04-project-dialogs.md` mock `lib/mock-projects.ts` data over to
-  real `prisma.project`/`prisma.projectCollaborator` calls behind
-  authenticated API routes (ownership checks against `auth().userId`), or the
-  collaborative canvas surface itself — `app/editor/page.tsx` now shows the
-  create/open CTA from `04-project-dialogs.md` instead of the old "Canvas
-  coming soon" placeholder, but there's still no real canvas, and no project
-  route to land on after opening one.
-- **The real `DATABASE_URL` in `.env`/`.env.local` (`pooled.db.prisma.io`) has
-  not had the `init` migration applied to it** — this sandbox's network
-  cannot reach it (see Session Notes below). Run `npx prisma migrate deploy`
-  (or `migrate dev` if further schema changes are made first) against that
-  database from a machine/CI job with real network access before anything
-  that queries `Project`/`ProjectCollaborator` is exercised against it.
+  `07-wire-editor-home.md` exists yet). The editor home/sidebar/dialogs are
+  now fully wired to the real `/api/projects` route and Prisma-backed data
+  (see `07-wire-editor-home.md`'s Completed entry above) — no more mock data
+  anywhere in `components/editor/*`.
+- `ProjectCollaborator` still has no API surface for *creating* a
+  collaborator (inviting someone by email) — `06-project-apis.md` only ever
+  covered owner CRUD on `Project`, and this chapter only *read*
+  `ProjectCollaborator` (for the shared-projects list and the workspace
+  page's access check). A future chapter will need a
+  `POST`/something to actually add a `ProjectCollaborator` row before the
+  "Shared" tab can ever show anything for a real user.
+- `app/editor/[projectId]/page.tsx` is a placeholder ("Canvas coming soon"),
+  added in this chapter only so "create navigates to workspace" had a real
+  route to land on. The actual canvas/Liveblocks integration is a future
+  spec chapter — when it lands, this file is where that UI replaces the
+  placeholder, and it's also where the "project id / Liveblocks room id
+  alignment" this chapter set up (see Completed above — `Project.id` is
+  already the intended room id, generated client-side at create time) gets
+  consumed.
+- The `proxy.ts` fix from this unit (see Completed above — skip
+  `auth.protect()` for `/api/*`, since Clerk's default behavior there is a
+  307/404, not `401`) means every future `app/api/*` route must perform its
+  own `auth()` check and return `401` itself; there's no more proxy-level
+  auth enforcement backstopping API routes.
+- **DEPLOYMENT BLOCKER: `.env`/`.env.local`'s active `DATABASE_URL` is a local
+  Prisma dev server (`ghost-ai-local`), not the real database.** See the
+  "Switched local `DATABASE_URL`..." Completed entry above for why (this
+  machine cannot reach `pooled.db.prisma.io` at all — connection reset, not
+  a code issue). Before deploying: restore the real `pooled.db.prisma.io`
+  connection string (preserved, commented out, directly above the local one
+  in both files) as the deployed environment's `DATABASE_URL`, and confirm
+  from a machine/CI job with real network access that
+  `npx prisma migrate deploy` has actually been run against it — it's still
+  unverified whether the `init` migration has ever been applied to the real
+  database itself (only ever applied to throwaway/local `prisma dev`
+  servers so far, across this and the `05-prisma.md` unit).
 - `dropdown-menu` isn't installed in `components/ui/` — fine for now since
   the sidebar only ever needed two always-visible actions (rename/delete) per
   `04-project-dialogs.md`, but a future chapter with more per-project actions
@@ -530,6 +869,20 @@ change.
   out of scope for the tasks this was found during.
 
 ## Architecture Decisions
+
+- `proxy.ts` no longer calls `auth.protect()` for `/api/*` requests (added
+  in `06-project-apis.md`). Auth enforcement for API routes now lives
+  entirely in each route handler via a direct `auth()` call and an explicit
+  `401` response — `clerkMiddleware()` itself still runs on every request
+  and still populates the auth context `auth()` reads, only the
+  `auth.protect()` redirect/`notFound()` call is skipped for `/api/*`. Page
+  routes are unaffected (still `auth.protect()` → 307 redirect to
+  `/sign-in`). Reason: Clerk's `auth.protect()` returns a 307 or 404 for an
+  unauthenticated non-page request, never a plain `401` JSON body — see the
+  `06-project-apis.md` Completed entry above for how this was found and
+  confirmed by reading Clerk's source. Every future `app/api/*` route must
+  follow the same pattern (own `auth()` check, own `401`) since there is no
+  proxy-level backstop for API routes anymore.
 
 - `components/editor/project-sidebar.tsx`'s slide-in animation uses `left`
   positioning (`left-0` / `-left-72` with `transition-[left]`) rather than

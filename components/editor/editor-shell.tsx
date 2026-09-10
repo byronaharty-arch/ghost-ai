@@ -8,16 +8,26 @@ import { EditorNavbar } from "@/components/editor/editor-navbar"
 import { ProjectDialogsProvider } from "@/components/editor/project-dialogs-context"
 import { ProjectSidebar } from "@/components/editor/project-sidebar"
 import { RenameProjectDialog } from "@/components/editor/rename-project-dialog"
+import type { Project } from "@/types/project"
 
 interface EditorShellProps {
   children: ReactNode
+  ownedProjects: Project[]
+  sharedProjects: Project[]
 }
 
-export function EditorShell({ children }: EditorShellProps) {
+export function EditorShell({
+  children,
+  ownedProjects,
+  sharedProjects,
+}: EditorShellProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
 
   return (
-    <ProjectDialogsProvider>
+    <ProjectDialogsProvider
+      ownedProjects={ownedProjects}
+      sharedProjects={sharedProjects}
+    >
       <div className="min-h-screen bg-bg-base">
         <EditorNavbar
           isSidebarOpen={isSidebarOpen}

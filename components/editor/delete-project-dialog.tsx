@@ -5,7 +5,7 @@ import { useProjectDialogsContext } from "@/components/editor/project-dialogs-co
 import { Button } from "@/components/ui/button"
 
 export function DeleteProjectDialog() {
-  const { dialog, isLoading, closeDialog, submitDelete } =
+  const { dialog, submitError, isLoading, closeDialog, submitDelete } =
     useProjectDialogsContext()
 
   const isOpen = dialog?.type === "delete"
@@ -34,6 +34,12 @@ export function DeleteProjectDialog() {
           </Button>
         </>
       }
-    />
+    >
+      {submitError ? (
+        <p role="alert" className="text-sm text-destructive">
+          {submitError}
+        </p>
+      ) : null}
+    </EditorDialog>
   )
 }

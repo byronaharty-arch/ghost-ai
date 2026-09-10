@@ -1,9 +1,9 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useMemo, useState, useTransition } from "react"
+import { usePathname, useRouter } from "next/navigation"
 
-import { MOCK_PROJECTS } from "@/lib/mock-projects"
-import { isValidSlug, slugify } from "@/lib/utils"
+import { generateRoomSuffix, isValidSlug, slugify } from "@/lib/utils"
 import type { Project } from "@/types/project"
 
 type DialogState =
@@ -12,52 +12,77 @@ type DialogState =
   | { type: "delete"; project: Project }
   | null
 
-const MOCK_SUBMIT_DELAY_MS = 400
+interface UseProjectDialogsOptions {
+  ownedProjects: Project[]
+  sharedProjects: Project[]
+}
 
-export function useProjectDialogs() {
-  const [projects, setProjects] = useState<Project[]>(MOCK_PROJECTS)
+async function readErrorMessage(
+  response: Response,
+  fallback: string
+): Promise<string> {
+  const body = await response.json().catch(() => null)
+  return typeof body?.error === "string" ? body.error : fallback
+}
+
+export function useProjectDialogs({
+  ownedProjects,
+  sharedProjects,
+}: UseProjectDialogsOptions) {
+  const router = useRouter()
+  const pathname = usePathname()
+
   const [dialog, setDialog] = useState<DialogState>(null)
-  const [name, setName] = useState("")
+  const [name, setNameState] = useState("")
   const [nameError, setNameError] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const pendingMutationRef = useRef<number | null>(null)
-  const mutationVersionRef = useRef(0)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [roomSuffix, setRoomSuffix] = useState("")
+  const [isMutating, setIsMutating] = useState(false)
+  const [isRefreshing, startTransition] = useTransition()
+
+  const projects = useMemo(
+    () => [...ownedProjects, ...sharedProjects],
+    [ownedProjects, sharedProjects]
+  )
 
   const slug = slugify(name)
+  const roomId = slug ? `${slug}-${roomSuffix}` : ""
+  const isLoading = isMutating || isRefreshing
+
+  function setName(value: string) {
+    setNameState(value)
+    setNameError(null)
+  }
 
   function openCreateDialog() {
-    setName("")
+    setNameState("")
     setNameError(null)
+    setSubmitError(null)
+    setRoomSuffix(generateRoomSuffix())
     setDialog({ type: "create" })
   }
 
   function openRenameDialog(project: Project) {
-    setName(project.name)
+    setNameState(project.name)
     setNameError(null)
+    setSubmitError(null)
     setDialog({ type: "rename", project })
   }
 
   function openDeleteDialog(project: Project) {
+    setSubmitError(null)
     setDialog({ type: "delete", project })
   }
 
-  function cancelPendingMutation() {
-    if (pendingMutationRef.current !== null) {
-      window.clearTimeout(pendingMutationRef.current)
-      pendingMutationRef.current = null
-    }
-    mutationVersionRef.current += 1
-  }
-
   function closeDialog() {
-    cancelPendingMutation()
     setDialog(null)
-    setName("")
+    setNameState("")
     setNameError(null)
-    setIsLoading(false)
+    setSubmitError(null)
+    setIsMutating(false)
   }
 
-  function submitCreate() {
+  async function submitCreate() {
     const trimmedName = name.trim()
     const projectSlug = slugify(trimmedName)
     if (!trimmedName) {
@@ -69,75 +94,104 @@ export function useProjectDialogs() {
       return
     }
 
-    setIsLoading(true)
-    cancelPendingMutation()
-    const mutationVersion = mutationVersionRef.current
-    pendingMutationRef.current = window.setTimeout(() => {
-      if (mutationVersion !== mutationVersionRef.current) return
+    const id = `${projectSlug}-${roomSuffix}`
 
-      pendingMutationRef.current = null
-      setProjects((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          name: trimmedName,
-          slug: projectSlug,
-          role: "owner",
-        },
-      ])
-      setIsLoading(false)
+    setIsMutating(true)
+    setSubmitError(null)
+    try {
+      const response = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, name: trimmedName }),
+      })
+
+      if (!response.ok) {
+        setSubmitError(await readErrorMessage(response, "Failed to create project."))
+        setIsMutating(false)
+        return
+      }
+
+      const { project } = (await response.json()) as { project: { id: string } }
+      setIsMutating(false)
       closeDialog()
-    }, MOCK_SUBMIT_DELAY_MS)
+      router.push(`/editor/${project.id}`)
+      startTransition(() => {
+        router.refresh()
+      })
+    } catch {
+      setSubmitError("Failed to create project.")
+      setIsMutating(false)
+    }
   }
 
-  function submitRename() {
+  async function submitRename() {
     if (dialog?.type !== "rename") return
     const trimmedName = name.trim()
-    const projectSlug = slugify(trimmedName)
     if (!trimmedName) {
       setNameError("Project name is required.")
-      return
-    }
-    if (!isValidSlug(projectSlug)) {
-      setNameError("Project name must produce a valid slug.")
       return
     }
 
     const { project } = dialog
-    setIsLoading(true)
-    cancelPendingMutation()
-    const mutationVersion = mutationVersionRef.current
-    pendingMutationRef.current = window.setTimeout(() => {
-      if (mutationVersion !== mutationVersionRef.current) return
+    setIsMutating(true)
+    setSubmitError(null)
+    try {
+      const response = await fetch("/api/projects", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: project.id, name: trimmedName }),
+      })
 
-      pendingMutationRef.current = null
-      setProjects((current) =>
-        current.map((item) =>
-          item.id === project.id
-            ? { ...item, name: trimmedName, slug: projectSlug }
-            : item
-        )
-      )
-      setIsLoading(false)
+      if (!response.ok) {
+        setSubmitError(await readErrorMessage(response, "Failed to rename project."))
+        setIsMutating(false)
+        return
+      }
+
+      setIsMutating(false)
       closeDialog()
-    }, MOCK_SUBMIT_DELAY_MS)
+      startTransition(() => {
+        router.refresh()
+      })
+    } catch {
+      setSubmitError("Failed to rename project.")
+      setIsMutating(false)
+    }
   }
 
-  function submitDelete() {
+  async function submitDelete() {
     if (dialog?.type !== "delete") return
 
     const { project } = dialog
-    setIsLoading(true)
-    cancelPendingMutation()
-    const mutationVersion = mutationVersionRef.current
-    pendingMutationRef.current = window.setTimeout(() => {
-      if (mutationVersion !== mutationVersionRef.current) return
+    const isActiveWorkspace = pathname === `/editor/${project.id}`
 
-      pendingMutationRef.current = null
-      setProjects((current) => current.filter((item) => item.id !== project.id))
-      setIsLoading(false)
+    setIsMutating(true)
+    setSubmitError(null)
+    try {
+      const response = await fetch("/api/projects", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: project.id }),
+      })
+
+      if (!response.ok) {
+        setSubmitError(await readErrorMessage(response, "Failed to delete project."))
+        setIsMutating(false)
+        return
+      }
+
+      setIsMutating(false)
       closeDialog()
-    }, MOCK_SUBMIT_DELAY_MS)
+      if (isActiveWorkspace) {
+        router.push("/editor")
+      }
+      startTransition(() => {
+        router.refresh()
+      })
+    } catch {
+      setSubmitError("Failed to delete project.")
+      setIsMutating(false)
+    }
   }
 
   return {
@@ -145,12 +199,11 @@ export function useProjectDialogs() {
     dialog,
     name,
     nameError,
+    submitError,
     slug,
+    roomId,
     isLoading,
-    setName: (value: string) => {
-      setName(value)
-      setNameError(null)
-    },
+    setName,
     openCreateDialog,
     openRenameDialog,
     openDeleteDialog,

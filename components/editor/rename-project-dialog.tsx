@@ -10,6 +10,7 @@ export function RenameProjectDialog() {
     dialog,
     name,
     nameError,
+    submitError,
     isLoading,
     setName,
     closeDialog,
@@ -61,6 +62,11 @@ export function RenameProjectDialog() {
         {nameError ? (
           <p id="rename-project-name-error" role="alert" className="text-sm text-destructive">
             {nameError}
+          </p>
+        ) : null}
+        {submitError ? (
+          <p role="alert" className="text-sm text-destructive">
+            {submitError}
           </p>
         ) : null}
       </form>

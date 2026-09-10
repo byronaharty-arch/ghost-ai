@@ -8,7 +8,15 @@ const isPublicRoute = createRouteMatcher([
   `${signUpUrl}(.*)`,
 ]);
 
+// API routes enforce their own auth (return 401 JSON) instead of Clerk's
+// default page-redirect/404 handling, per `context/code-standards.md`'s
+// "Enforce auth and ownership before any mutation" rule for route handlers.
+const isApiRoute = createRouteMatcher(["/api(.*)"]);
+
 export default clerkMiddleware(async (auth, request) => {
+  if (isApiRoute(request)) {
+    return;
+  }
   if (!isPublicRoute(request)) {
     await auth.protect();
   }

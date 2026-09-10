@@ -16,3 +16,7 @@ export function slugify(value: string): string {
 export function isValidSlug(value: string): boolean {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)
 }
+
+export function generateRoomSuffix(): string {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 6)
+}

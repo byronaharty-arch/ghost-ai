@@ -10,7 +10,8 @@ export function CreateProjectDialog() {
     dialog,
     name,
     nameError,
-    slug,
+    submitError,
+    roomId,
     isLoading,
     setName,
     closeDialog,
@@ -65,8 +66,13 @@ export function CreateProjectDialog() {
           </p>
         ) : null}
         <p className="text-sm text-copy-muted">
-          {slug || "your-project-slug"}
+          {roomId || "your-project-room-id"}
         </p>
+        {submitError ? (
+          <p role="alert" className="text-sm text-destructive">
+            {submitError}
+          </p>
+        ) : null}
       </form>
     </EditorDialog>
   )

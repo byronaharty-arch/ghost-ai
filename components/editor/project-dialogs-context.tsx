@@ -6,13 +6,24 @@ import {
   useProjectDialogs,
   type UseProjectDialogsReturn,
 } from "@/hooks/use-project-dialogs"
+import type { Project } from "@/types/project"
 
 const ProjectDialogsContext = createContext<UseProjectDialogsReturn | null>(
   null
 )
 
-export function ProjectDialogsProvider({ children }: { children: ReactNode }) {
-  const value = useProjectDialogs()
+interface ProjectDialogsProviderProps {
+  children: ReactNode
+  ownedProjects: Project[]
+  sharedProjects: Project[]
+}
+
+export function ProjectDialogsProvider({
+  children,
+  ownedProjects,
+  sharedProjects,
+}: ProjectDialogsProviderProps) {
+  const value = useProjectDialogs({ ownedProjects, sharedProjects })
   return (
     <ProjectDialogsContext.Provider value={value}>
       {children}
